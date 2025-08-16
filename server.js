@@ -5,44 +5,75 @@ const cors = require("cors");
 
 const app = express();
 app.use(cors());
-app.use(express.static("public"));
 
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 let clients = new Set();
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // Force low-latency, disable Nagle's algorithm
+  if (req.socket) {
+    req.socket.setNoDelay(true);
+  }
+
   clients.add(ws);
   broadcastUserCount();
 
-  ws.on("message", (message) => {
-    let data;
+  ws.on("message", (msg) => {
     try {
-      data = JSON.parse(message);
-    } catch {
-      return;
-    }
+      const data = JSON.parse(msg);
+      switch (data.type) {
+        case "ping":
+          ws.send(
+            JSON.stringify({
+              type: "pong",
+              clientTime: data.time,
+              serverTime: Date.now(),
+            })
+          );
+          break;
 
-    if (data.type === "message") {
-      broadcast({ type: "message", username: data.username, message: data.message });
-    }
+        case "message":
+          broadcast(
+            {
+              type: "message",
+              username: data.username,
+              message: data.message,
+            },
+            null
+          );
+          break;
 
-    if (data.type === "ping") {
-      ws.send(JSON.stringify({
-        type: "pong",
-        clientTime: data.time,
-        serverTime: performance.now(),
-      }));
-    }
+        case "sound":
+          broadcast(
+            {
+              type: "sound",
+              drum: data.drum,
+              username: data.username,
+              serverTime: Date.now(),
+            },
+            ws
+          );
+          break;
 
-    if (data.type === "voice") {
-      data._relay = true; // mark for relay
-      for (const client of clients) {
-        if (client !== ws && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify(data));
-        }
+        case "piano":
+          broadcast(
+            {
+              type: "piano",
+              note: data.note,
+              username: data.username,
+              serverTime: Date.now(),
+            },
+            ws
+          );
+          break;
+
+        default:
+          console.log(`Unknown message type: ${data.type}`);
       }
+    } catch (e) {
+      console.log(`Error parsing message: ${e}`);
     }
   });
 
@@ -52,19 +83,28 @@ wss.on("connection", (ws) => {
   });
 });
 
+function broadcast(data, exclude = null) {
+  try {
+    const json = JSON.stringify(data);
+    for (let client of clients) {
+      if (client.readyState === WebSocket.OPEN && client !== exclude) {
+        client.send(json);
+      }
+    }
+  } catch (e) {
+    console.log(`Error broadcasting message: ${e}`);
+  }
+}
+
 function broadcastUserCount() {
   broadcast({ type: "userCount", count: clients.size });
 }
 
-function broadcast(data) {
-  const message = JSON.stringify(data);
-  for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
-    }
-  }
-}
+app.get("/", (req, res) => {
+  res.send("WebSocket Server Running");
+});
 
-server.listen(process.env.PORT || 3000, () => {
-  console.log("Server running");
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
